@@ -27,7 +27,7 @@ This codebase is composed of the following parts:
     - Change `user_name` in [config.yaml](../config.yaml)
     - Push changes to remote repo
 3. Config Github Actions
-    - Enable read and write permissions: Setting -> Actions -> Workflow permissions, select `Read and write permissions` and save.
+    - Enable read and write permissions: Setting -> Actions -> General-> Workflow permissions, select `Read and write permissions` and save.
     ![](../assets/4-ga-2-1.png)
     - Enable workflows: Actions -> `I understand my workflows, go ahead and enable them` -> Select `Run Arxiv Papars Daily` in right sidebar and click `Enable workflow` -> click `Run workflow` wait about 1 min until the job update done. The same for the job `Run Update Paper Links Weekly`.
     ![](../assets/4-ga-3-1.png)
