@@ -208,9 +208,7 @@ def generate_daily_md(data_dicts, md_path):
                     title = pretty_math(info.get('title', ''))
                     date_val = info.get('date', '')
                     first_author = info.get('first_author', '')
-                    abstract = info.get('abstract', '')[:200]
-                    if len(info.get('abstract', '')) > 200:
-                        abstract += '...'
+                    abstract = info.get('abstract', '')
                     url = info.get('url', '')
                     f.write(f"|**{date_val}**|**{title}**|{first_author} et.al.|{abstract}|[{paper_id}]({url})|\n")
 
