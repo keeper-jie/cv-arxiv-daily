@@ -304,9 +304,19 @@ def json_to_md(filename,md_filename,
             else:
                 data = json.loads(content)
 
-    # clean README.md if daily already exist else create it
-    with open(md_filename,"w+") as f:
+    # preserve content above <!-- DAILY_PAPERS --> marker
+    header = ''
+    marker = '<!-- DAILY_PAPERS -->'
+    try:
+        with open(md_filename, "r") as f:
+            existing = f.read()
+        if marker in existing:
+            header = existing[:existing.index(marker) + len(marker)] + '\n\n'
+    except FileNotFoundError:
         pass
+
+    with open(md_filename, "w") as f:
+        f.write(header)
 
     # write data into README.md
     with open(md_filename,"a+") as f:
@@ -413,12 +423,12 @@ def demo(**config):
     data_collector = []
     data_collector_web= []
 
-    keywords = config['kv']
-    max_results = config['max_results']
-    publish_readme = config['publish_readme']
-    publish_gitpage = config['publish_gitpage']
-    publish_wechat = config['publish_wechat']
-    show_badge = config['show_badge']
+    keywords = config.get('kv', {})
+    max_results = config.get('max_results', 10)
+    publish_readme = config.get('publish_readme', True)
+    publish_gitpage = config.get('publish_gitpage', True)
+    publish_wechat = config.get('publish_wechat', False)
+    show_badge = config.get('show_badge', False)
 
     daily_category = config.get('daily_category', False)
     category_list = config.get('category_list', [])

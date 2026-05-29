@@ -1,4 +1,70 @@
-## Updated on 2026.05.28
+# cv-arxiv-daily
+
+Daily scraping of the latest Computer Vision papers from [arxiv.org](https://arxiv.org), automated via GitHub Actions.
+
+## How it works
+
+```
+GitHub Action (daily 9:00 UTC)
+  → scrape https://arxiv.org/list/cs.CV/new
+  → extract title, authors, abstract for each paper
+  → save to docs/cv-arxiv-daily-YYYY-MM-DD.json
+  → merge all dates → generate Markdown tables below
+```
+
+- **No API key required** — parses the HTML listing page directly, avoiding ArXiv API rate limits.
+- **Structured JSON** — each date file stores `title`, `authors`, `first_author`, `abstract`, `date`, `url`.
+- **Incremental** — README is regenerated from all historical date JSONs on each run.
+
+## Project structure
+
+```
+.
+├── daily_arxiv.py              # main scraper script
+├── config.yaml                 # configuration
+├── requirements.txt            # Python dependencies
+├── .github/workflows/
+│   └── cv-arxiv-daily.yml      # GitHub Actions schedule
+├── docs/
+│   ├── cv-arxiv-daily-{date}.json      # daily paper data (auto)
+│   ├── cv-arxiv-daily-web-{date}.json  # web format (auto)
+│   └── index.md                        # GitHub Pages output (auto)
+└── README.md                   # this file + daily paper tables
+```
+
+## Local development
+
+```bash
+# setup
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+
+# run
+venv/bin/python daily_arxiv.py
+```
+
+## Configuration
+
+Edit `config.yaml`:
+
+```yaml
+daily_category: true            # enable category-based scraping
+category_list: ["cs.CV"]        # arXiv categories to track
+publish_readme: true            # update README.md
+publish_gitpage: true           # update docs/index.md
+```
+
+Add more categories in `category_list` — e.g. `["cs.CV", "cs.RO", "cs.AI"]` — to track multiple fields.
+
+## GitHub Actions setup
+
+1. Fork this repo
+2. Settings → Actions → General → Workflow permissions → **Read and write permissions**
+3. The workflow runs daily at 9:00 UTC (`cron: "0 9 * * *"`). Adjust timezone in `.github/workflows/cv-arxiv-daily.yml` if needed.
+
+<!-- DAILY_PAPERS -->
+
+## Updated on 2026.05.29
 > Usage instructions: [here](./docs/README.md#usage)
 
 <details>
@@ -255,7 +321,7 @@
 |**2026-05-28**|**In Search of the Ingredients of Open-Endedness: Replicating Picbreeder with Large Vision-Language Models**|Sam Earle et.al.|We are in the midst of large-scale industrial and academic efforts to automate the processes of scientific, technological and creative production through AI-driven assistants. Historically, a fundamen...|[2605.23908](http://arxiv.org/abs/2605.23908)|
 |**2026-05-28**|**Garment Particles: A 2D--3D Symmetric Garment Representation for Generation and Editing**|Kiyohiro Nakayama et.al.|Practical garment design spans two modes: intuitive creation from high-level intent, such as a reference image or text description, and complex low-level editing across 2D sewing patterns and 3D drape...|[2605.26391](http://arxiv.org/abs/2605.26391)|
 
-<p align=right>(<a href=#updated-on-20260528>back to top</a>)</p>
+<p align=right>(<a href=#updated-on-20260529>back to top</a>)</p>
 
 [contributors-shield]: https://img.shields.io/github/contributors/Vincentqyw/cv-arxiv-daily.svg?style=for-the-badge
 [contributors-url]: https://github.com/Vincentqyw/cv-arxiv-daily/graphs/contributors
