@@ -1,7 +1,7 @@
 import os
 import re
 import json
-import arxiv
+import glob
 import yaml
 import logging
 import argparse
@@ -42,7 +42,10 @@ def load_config(config_file:str) -> dict:
         return keywords
     with open(config_file,'r') as f:
         config = yaml.load(f,Loader=yaml.FullLoader)
-        config['kv'] = pretty_filters(**config)
+        if 'keywords' in config:
+            config['kv'] = pretty_filters(**config)
+        else:
+            config['kv'] = {}
         logging.info(f'config = {config}')
     return config
 
@@ -60,7 +63,6 @@ def sort_papers(papers):
     for key in keys:
         output[key] = papers[key]
     return output
-import requests
 
 def get_code_link(qword:str) -> str:
     """
@@ -83,102 +85,116 @@ def get_code_link(qword:str) -> str:
         code_link = results["items"][0]["html_url"]
     return code_link
 
-def get_daily_papers(topic,query="slam", max_results=2):
+def scrape_arxiv_listing(category, max_results=None):
     """
-    @param topic: str
-    @param query: str
-    @return paper_with_code: dict
+    Scrape arXiv /new listing page for today's papers with abstracts.
+    @param category: str, arXiv category code (e.g. cs.CV)
+    @param max_results: int or None, max papers to return (None = all)
+    @return: (data, data_web) dicts keyed by category name
     """
-    # output
+    url = f"https://arxiv.org/list/{category}/new?skip=0&show=2000"
+    logging.info(f"Fetching {url}")
+    resp = requests.get(url, timeout=60)
+    html = resp.text
+
+    # date: <h3>Showing new listings for Thursday, 28 May 2026</h3>
+    date_m = re.search(r'<h3>Showing new listings for \w+, (\d{1,2} \w+ \d{4})</h3>', html)
+    if date_m:
+        try:
+            current_date = datetime.datetime.strptime(date_m.group(1), '%d %B %Y').date()
+        except ValueError:
+            current_date = datetime.date.today()
+    else:
+        current_date = datetime.date.today()
+    date_str = current_date.isoformat()
+
     content = dict()
     content_to_web = dict()
-    search_engine = arxiv.Search(
-        query = query,
-        max_results = max_results,
-        sort_by = arxiv.SortCriterion.SubmittedDate
-    )
 
-    for result in search_engine.results():
+    entries = list(re.finditer(
+        r'<a\s+name=[\'"]item\d+[\'"]>.*?</a>\s*<a\s+href\s*=\s*["\']/abs/(\d+\.\d+)[^>]*>\s*arXiv:\1',
+        html
+    ))
 
-        paper_id            = result.get_short_id()
-        paper_title         = result.title
-        paper_url           = result.entry_id
-        paper_abstract      = result.summary.replace("\n"," ")
-        paper_authors       = get_authors(result.authors)
-        paper_first_author  = get_authors(result.authors,first_author = True)
-        primary_category    = result.primary_category
-        publish_time        = result.published.date()
-        update_time         = result.updated.date()
-        comments            = result.comment
+    for entry in entries:
+        if max_results and len(content) >= max_results:
+            break
 
-        logging.info(f"Time = {update_time} title = {paper_title} author = {paper_first_author}")
+        paper_id = entry.group(1)
+        dd_start = html.find('<dd>', entry.end())
+        if dd_start == -1:
+            continue
+        dd_end = html.find('</dd>', dd_start)
+        if dd_end == -1:
+            continue
+        dd_block = html[dd_start:dd_end]
 
-        # eg: 2108.09112v1 -> 2108.09112
-        ver_pos = paper_id.find('v')
-        if ver_pos == -1:
-            paper_key = paper_id
-        else:
-            paper_key = paper_id[0:ver_pos]
-        paper_url = arxiv_url + 'abs/' + paper_key
+        # title
+        title_m = re.search(
+            r"<div\s+class=['\"]list-title[^'\"]*['\"][^>]*>.*?<span[^>]*>Title:</span>\s*(.+?)\s*</div>",
+            dd_block, re.DOTALL
+        )
+        title = ''
+        if title_m:
+            title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip()
+            title = re.sub(r'\s+', ' ', title)
 
-        # Since PapersWithCode API is deprecated, we no longer fetch code links
-        # Papers will be listed without code links
-        content[paper_key] = "|**{}**|**{}**|{} et.al.|[{}]({})|null|\n".format(
-               update_time,paper_title,paper_first_author,paper_key,paper_url)
-        content_to_web[paper_key] = "- {}, **{}**, {} et.al., Paper: [{}]({})".format(
-               update_time,paper_title,paper_first_author,paper_url,paper_url)
+        # authors
+        authors = ''
+        first_author = ''
+        authors_m = re.search(
+            r"<div\s+class=['\"]list-authors['\"][^>]*>(.+?)</div>",
+            dd_block, re.DOTALL
+        )
+        if authors_m:
+            author_texts = re.findall(r'<a[^>]*>([^<]+)</a>', authors_m.group(1))
+            if author_texts:
+                first_author = author_texts[0].strip()
+                authors = ', '.join(a.strip() for a in author_texts)
 
-        # TODO: select useful comments
-        comments = None
-        if comments != None:
-            content_to_web[paper_key] += f", {comments}\n"
-        else:
-            content_to_web[paper_key] += f"\n"
+        # abstract: <p class='mathjax'>...</p>
+        abstract = ''
+        abstract_m = re.search(
+            r"<p\s+class=['\"]mathjax['\"][^>]*>(.+?)</p>",
+            dd_block, re.DOTALL
+        )
+        if abstract_m:
+            abstract = re.sub(r'<[^>]+>', '', abstract_m.group(1)).strip()
+            abstract = re.sub(r'\s+', ' ', abstract)
 
-    data = {topic:content}
-    data_web = {topic:content_to_web}
-    return data,data_web
+        paper_url = arxiv_url + 'abs/' + paper_id
+        paper_data = {
+            "title": title,
+            "authors": authors,
+            "first_author": first_author,
+            "abstract": abstract,
+            "date": date_str,
+            "url": paper_url,
+        }
+        content[paper_id] = paper_data
+        content_to_web[paper_id] = f"- {date_str}, **{title}**, {first_author} et.al., Paper: [{paper_url}]({paper_url})\n"
+        logging.info(f"Time = {date_str} title = {title} author = {first_author}")
+
+    logging.info(f"Scraped {len(content)} papers from {category}")
+    data = {category: content}
+    data_web = {category: content_to_web}
+    return data, data_web
+
+def get_daily_papers(topic, query="slam", max_results=2):
+    """Deprecated keyword-based fetch. Requires arxiv package. Kept for backward compat."""
+    logging.warning("get_daily_papers() requires the arxiv package. Use scrape_arxiv_listing() instead.")
+    return {topic: {}}, {topic: {}}
+
+def get_daily_papers_by_category(category, max_results=None):
+    """Fetch all papers in a given arXiv category via HTML scraping."""
+    return scrape_arxiv_listing(category, max_results=max_results)
 
 def update_paper_links(filename):
     '''
-    weekly update paper links in json file
+    weekly update paper links in json file.
+    Note: PapersWithCode API is deprecated; this is kept for backward compat.
     '''
-    def parse_arxiv_string(s):
-        parts = s.split("|")
-        date = parts[1].strip()
-        title = parts[2].strip()
-        authors = parts[3].strip()
-        arxiv_id = parts[4].strip()
-        code = parts[5].strip()
-        arxiv_id = re.sub(r'v\d+', '', arxiv_id)
-        return date,title,authors,arxiv_id,code
-
-    with open(filename,"r") as f:
-        content = f.read()
-        if not content:
-            m = {}
-        else:
-            m = json.loads(content)
-
-        json_data = m.copy()
-
-        for keywords,v in json_data.items():
-            logging.info(f'keywords = {keywords}')
-            for paper_id,contents in v.items():
-                contents = str(contents)
-
-                update_time, paper_title, paper_first_author, paper_url, code_url = parse_arxiv_string(contents)
-
-                contents = "|{}|{}|{}|{}|{}|\n".format(update_time,paper_title,paper_first_author,paper_url,code_url)
-                json_data[keywords][paper_id] = str(contents)
-                logging.info(f'paper_id = {paper_id}, contents = {contents}')
-
-                # PapersWithCode API is deprecated, skip code link updates
-                # Papers will keep their existing null code links
-                logging.info(f'Skipping code link update for paper_id = {paper_id} (PapersWithCode API deprecated)')
-        # dump to json file
-        with open(filename,"w") as f:
-            json.dump(json_data,f)
+    logging.info(f"update_paper_links: PapersWithCode API deprecated, skipping {filename}")
 
 def update_json_file(filename,data_dict):
     '''
@@ -206,16 +222,60 @@ def update_json_file(filename,data_dict):
     with open(filename,"w") as f:
         json.dump(json_data,f)
 
+def save_date_json(filepath, data_dict):
+    '''
+    write today's papers to a date-stamped JSON file.
+    if re-run on the same day, merge with existing data.
+    '''
+    if os.path.exists(filepath):
+        with open(filepath, "r") as f:
+            content = f.read()
+            existing = json.loads(content) if content else {}
+    else:
+        existing = {}
+
+    for data in data_dict:
+        for keyword, papers in data.items():
+            if keyword in existing:
+                existing[keyword].update(papers)
+            else:
+                existing[keyword] = papers
+
+    with open(filepath, "w") as f:
+        json.dump(existing, f)
+
+def merge_date_jsons(directory, prefix):
+    '''
+    merge all date-stamped JSON files matching {directory}/{prefix}-YYYY-MM-DD.json.
+    returns a merged dict with the same structure as the old single JSON.
+    '''
+    pattern = os.path.join(directory, f"{prefix}-????-??-??.json")
+    merged = {}
+    for filepath in sorted(glob.glob(pattern)):
+        with open(filepath, "r") as f:
+            content = f.read()
+            if not content:
+                continue
+            data = json.loads(content)
+            for topic, papers in data.items():
+                if topic in merged:
+                    merged[topic].update(papers)
+                else:
+                    merged[topic] = papers
+    return merged
+
 def json_to_md(filename,md_filename,
                task = '',
                to_web = False,
                use_title = True,
                use_tc = True,
                show_badge = True,
-               use_b2t = True):
+               use_b2t = True,
+               data = None):
     """
-    @param filename: str
+    @param filename: str (ignored if data is provided)
     @param md_filename: str
+    @param data: dict, optional. If provided, used directly instead of reading from file.
     @return None
     """
     def pretty_math(s:str) -> str:
@@ -236,12 +296,13 @@ def json_to_md(filename,md_filename,
     DateNow = str(DateNow)
     DateNow = DateNow.replace('-','.')
 
-    with open(filename,"r") as f:
-        content = f.read()
-        if not content:
-            data = {}
-        else:
-            data = json.loads(content)
+    if data is None:
+        with open(filename,"r") as f:
+            content = f.read()
+            if not content:
+                data = {}
+            else:
+                data = json.loads(content)
 
     # clean README.md if daily already exist else create it
     with open(md_filename,"w+") as f:
@@ -292,17 +353,32 @@ def json_to_md(filename,md_filename,
 
             if use_title == True :
                 if to_web == False:
-                    f.write("|Publish Date|Title|Authors|PDF|Code|\n" + "|---|---|---|---|---|\n")
+                    f.write("|Publish Date|Title|Authors|Abstract|PDF|\n" + "|---|---|---|---|---|\n")
                 else:
-                    f.write("| Publish Date | Title | Authors | PDF | Code |\n")
+                    f.write("| Publish Date | Title | Authors | Abstract | PDF |\n")
                     f.write("|:---------|:-----------------------|:---------|:------|:------|\n")
 
-            # sort papers by date
-            day_content = sort_papers(day_content)
+            # sort papers by date (descending), then by paper_id
+            sorted_papers = sorted(day_content.items(),
+                key=lambda x: (x[1].get('date', '') if isinstance(x[1], dict) else ''),
+                reverse=True)
 
-            for _,v in day_content.items():
-                if v is not None:
-                    f.write(pretty_math(v)) # make latex pretty
+            for paper_id, v in sorted_papers:
+                if v is None:
+                    continue
+                if isinstance(v, dict):
+                    title = pretty_math(v.get('title', ''))
+                    date_val = v.get('date', '')
+                    first_author = v.get('first_author', '')
+                    abstract = v.get('abstract', '')[:200] + ('...' if len(v.get('abstract', '')) > 200 else '')
+                    url = v.get('url', '')
+                    if to_web == False:
+                        f.write(f"|**{date_val}**|**{title}**|{first_author} et.al.|{abstract}|[{paper_id}]({url})|\n")
+                    else:
+                        f.write(f"| {date_val} | {title} | {first_author} et.al. | {abstract} | [{paper_id}]({url}) |\n")
+                else:
+                    # backward compat: old pipe-delimited format
+                    f.write(pretty_math(str(v)))
 
             f.write(f"\n")
 
@@ -334,7 +410,6 @@ def json_to_md(filename,md_filename,
     logging.info(f"{task} finished")
 
 def demo(**config):
-    # TODO: use config
     data_collector = []
     data_collector_web= []
 
@@ -345,10 +420,27 @@ def demo(**config):
     publish_wechat = config['publish_wechat']
     show_badge = config['show_badge']
 
+    daily_category = config.get('daily_category', False)
+    category_list = config.get('category_list', [])
+    category_max_results = config.get('category_max_results', None)
+
+    today = datetime.date.today().isoformat()
+
     b_update = config['update_paper_links']
     logging.info(f'Update Paper Link = {b_update}')
     if config['update_paper_links'] == False:
         logging.info(f"GET daily papers begin")
+
+        # category-based fetch (no keyword filtering)
+        if daily_category:
+            for cat in category_list:
+                logging.info(f"Category: {cat}")
+                data, data_web = get_daily_papers_by_category(cat,
+                                            max_results = category_max_results)
+                data_collector.append(data)
+                data_collector_web.append(data_web)
+
+        # keyword-based fetch
         for topic, keyword in keywords.items():
             logging.info(f"Keyword: {topic}")
             data, data_web = get_daily_papers(topic, query = keyword,
@@ -358,44 +450,38 @@ def demo(**config):
             print("\n")
         logging.info(f"GET daily papers end")
 
+    def _date_pipeline(json_path, md_path, dc, **md_kwargs):
+        """save to date JSON, merge all, generate MD."""
+        json_dir = os.path.dirname(json_path)
+        json_prefix = os.path.splitext(os.path.basename(json_path))[0]
+        date_file = os.path.join(json_dir, f"{json_prefix}-{today}.json")
+
+        if config['update_paper_links']:
+            for fp in sorted(glob.glob(os.path.join(json_dir, f"{json_prefix}-????-??-??.json"))):
+                update_paper_links(fp)
+        else:
+            save_date_json(date_file, dc)
+
+        merged = merge_date_jsons(json_dir, json_prefix)
+        json_to_md(json_path, md_path, data=merged, **md_kwargs)
+
     # 1. update README.md file
     if publish_readme:
-        json_file = config['json_readme_path']
-        md_file   = config['md_readme_path']
-        # update paper links
-        if config['update_paper_links']:
-            update_paper_links(json_file)
-        else:
-            # update json data
-            update_json_file(json_file,data_collector)
-        # json data to markdown
-        json_to_md(json_file,md_file, task ='Update Readme', \
-            show_badge = show_badge)
+        _date_pipeline(config['json_readme_path'], config['md_readme_path'],
+                       data_collector, task='Update Readme', show_badge=show_badge)
 
     # 2. update docs/index.md file (to gitpage)
     if publish_gitpage:
-        json_file = config['json_gitpage_path']
-        md_file   = config['md_gitpage_path']
-        # TODO: duplicated update paper links!!!
-        if config['update_paper_links']:
-            update_paper_links(json_file)
-        else:
-            update_json_file(json_file,data_collector)
-        json_to_md(json_file, md_file, task ='Update GitPage', \
-            to_web = True, show_badge = show_badge, \
-            use_tc=False, use_b2t=False)
+        _date_pipeline(config['json_gitpage_path'], config['md_gitpage_path'],
+                       data_collector, task='Update GitPage',
+                       to_web=True, show_badge=show_badge,
+                       use_tc=False, use_b2t=False)
 
     # 3. Update docs/wechat.md file
     if publish_wechat:
-        json_file = config['json_wechat_path']
-        md_file   = config['md_wechat_path']
-        # TODO: duplicated update paper links!!!
-        if config['update_paper_links']:
-            update_paper_links(json_file)
-        else:
-            update_json_file(json_file, data_collector_web)
-        json_to_md(json_file, md_file, task ='Update Wechat', \
-            to_web=False, use_title= False, show_badge = show_badge)
+        _date_pipeline(config['json_wechat_path'], config['md_wechat_path'],
+                       data_collector_web, task='Update Wechat',
+                       to_web=False, use_title=False, show_badge=show_badge)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
