@@ -68,6 +68,7 @@ Add more categories in `category_list` â€” e.g. `["cs.CV", "cs.RO", "cs.AI"]` â€
 
 | Date | Papers | Link |
 |------|--------|------|
+| 2026-08-28 | 184 | [cs.CV](md/2026-08-28.md) |
 | 2026-08-27 | 173 | [cs.CV](md/2026-08-27.md) |
 | 2026-08-26 | 194 | [cs.CV](md/2026-08-26.md) |
 | 2026-08-24 | 151 | [cs.CV](md/2026-08-24.md) |
