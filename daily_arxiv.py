@@ -6,127 +6,128 @@ import yaml
 import logging
 import argparse
 import datetime
+import xml.etree.ElementTree as ET
+
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logging.basicConfig(format='[%(asctime)s %(levelname)s] %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
 
-arxiv_url = "http://arxiv.org/"
+ARXIV_BASE = "http://arxiv.org/"
+RSS_URL_TEMPLATE = "https://rss.arxiv.org/rss/{category}"
 
-def load_config(config_file:str) -> dict:
-    '''
-    config_file: input config file path
-    return: a dict of configuration
-    '''
-    # make filters pretty
-    def pretty_filters(**config) -> dict:
-        keywords = dict()
-        EXCAPE = '\"'
-        QUOTA = '' # NO-USE
-        OR = ' OR ' # TODO
-        def parse_filters(filters:list):
-            ret = ''
-            for idx in range(0,len(filters)):
-                filter = filters[idx]
-                if len(filter.split()) > 1:
-                    ret += (EXCAPE + filter + EXCAPE)
-                else:
-                    ret += (QUOTA + filter + QUOTA)
-                if idx != len(filters) - 1:
-                    ret += OR
-            return ret
-        for k,v in config['keywords'].items():
-            keywords[k] = parse_filters(v['filters'])
-        return keywords
-    with open(config_file,'r') as f:
-        config = yaml.load(f,Loader=yaml.FullLoader)
-        if 'keywords' in config:
-            config['kv'] = pretty_filters(**config)
-        else:
-            config['kv'] = {}
-        logging.info(f'config = {config}')
+NS = {
+    'dc': 'http://purl.org/dc/elements/1.1/',
+    'arxiv': 'http://arxiv.org/schemas/atom',
+}
+
+
+def _make_session(retries=3, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504)):
+    session = requests.Session()
+    retry = Retry(total=retries, backoff_factor=backoff_factor,
+                  status_forcelist=status_forcelist, raise_on_status=False)
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
+
+
+def load_config(config_file: str) -> dict:
+    with open(config_file, 'r', encoding='utf-8') as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+    if 'keywords' not in config:
+        config['kv'] = {}
+    logging.info(f'config = {config}')
     return config
 
-def scrape_arxiv_listing(category, max_results=None):
-    """
-    Scrape arXiv /new listing page for today's papers with abstracts.
-    @param category: str, arXiv category code (e.g. cs.CV)
-    @param max_results: int or None, max papers to return (None = all)
-    @return: (data, data_web) dicts keyed by category name
-    """
-    url = f"https://arxiv.org/list/{category}/new?skip=0&show=2000"
-    logging.info(f"Fetching {url}")
-    resp = requests.get(url, timeout=60)
-    html = resp.text
 
-    # date: <h3>Showing new listings for Thursday, 28 May 2026</h3>
-    date_m = re.search(r'<h3>Showing new listings for \w+, (\d{1,2} \w+ \d{4})</h3>', html)
-    if date_m:
+def fetch_rss(session, category):
+    url = RSS_URL_TEMPLATE.format(category=category)
+    logging.info(f"Fetching RSS: {url}")
+    resp = session.get(url, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"RSS request failed with status {resp.status_code}: {url}")
+    return resp.text
+
+
+def parse_rss_date(rss_xml):
+    channel = rss_xml.find('channel')
+    if channel is None:
+        return datetime.date.today()
+    pub_date = channel.findtext('pubDate', '')
+    if pub_date:
         try:
-            current_date = datetime.datetime.strptime(date_m.group(1), '%d %B %Y').date()
+            return datetime.datetime.strptime(pub_date, '%a, %d %b %Y %H:%M:%S %z').date()
         except ValueError:
-            current_date = datetime.date.today()
-    else:
-        current_date = datetime.date.today()
+            pass
+    last_build = channel.findtext('lastBuildDate', '')
+    if last_build:
+        try:
+            return datetime.datetime.strptime(last_build, '%a, %d %b %Y %H:%M:%S %z').date()
+        except ValueError:
+            pass
+    return datetime.date.today()
+
+
+def parse_description(desc_text):
+    """Parse RSS description: 'arXiv:ID Announce Type: X \\nAbstract: ...'"""
+    abstract = ''
+    m = re.search(r'Abstract:\s*(.*)', desc_text, re.DOTALL)
+    if m:
+        abstract = m.group(1).strip()
+    abstract = re.sub(r'\s+', ' ', abstract)
+    return abstract
+
+
+def scrape_arxiv_rss(category, max_results=None):
+    """
+    Fetch today's papers from arXiv RSS feed.
+    Returns (data, data_web) dicts keyed by category name.
+    """
+    session = _make_session()
+    rss_xml_text = fetch_rss(session, category)
+    root = ET.fromstring(rss_xml_text)
+
+    current_date = parse_rss_date(root)
     date_str = current_date.isoformat()
 
-    content = dict()
-    content_to_web = dict()
+    content = {}
+    content_to_web = {}
 
-    entries = list(re.finditer(
-        r'<a\s+name=[\'"]item\d+[\'"]>.*?</a>\s*<a\s+href\s*=\s*["\']/abs/(\d+\.\d+)[^>]*>\s*arXiv:\1',
-        html
-    ))
+    channel = root.find('channel')
+    if channel is None:
+        logging.warning(f"No <channel> found in RSS for {category}")
+        return {category: content}, {category: content_to_web}
 
-    for entry in entries:
+    for item in channel.findall('item'):
         if max_results and len(content) >= max_results:
             break
 
-        paper_id = entry.group(1)
-        dd_start = html.find('<dd>', entry.end())
-        if dd_start == -1:
+        link = item.findtext('link', '').strip()
+        id_match = re.search(r'(\d+\.\d+)', link)
+        if not id_match:
             continue
-        dd_end = html.find('</dd>', dd_start)
-        if dd_end == -1:
-            continue
-        dd_block = html[dd_start:dd_end]
+        paper_id = id_match.group(1)
 
-        # title
-        title_m = re.search(
-            r"<div\s+class=['\"]list-title[^'\"]*['\"][^>]*>.*?<span[^>]*>Title:</span>\s*(.+?)\s*</div>",
-            dd_block, re.DOTALL
-        )
-        title = ''
-        if title_m:
-            title = re.sub(r'<[^>]+>', '', title_m.group(1)).strip()
-            title = re.sub(r'\s+', ' ', title)
+        title = re.sub(r'\s+', ' ', item.findtext('title', '')).strip()
 
-        # authors
+        creators = item.findtext('dc:creator', '', NS).strip()
         authors = ''
         first_author = ''
-        authors_m = re.search(
-            r"<div\s+class=['\"]list-authors['\"][^>]*>(.+?)</div>",
-            dd_block, re.DOTALL
-        )
-        if authors_m:
-            author_texts = re.findall(r'<a[^>]*>([^<]+)</a>', authors_m.group(1))
-            if author_texts:
-                first_author = author_texts[0].strip()
-                authors = ', '.join(a.strip() for a in author_texts)
+        if creators:
+            author_list = [a.strip() for a in creators.split(',') if a.strip()]
+            if author_list:
+                first_author = author_list[0]
+                authors = ', '.join(author_list)
 
-        # abstract: <p class='mathjax'>...</p>
-        abstract = ''
-        abstract_m = re.search(
-            r"<p\s+class=['\"]mathjax['\"][^>]*>(.+?)</p>",
-            dd_block, re.DOTALL
-        )
-        if abstract_m:
-            abstract = re.sub(r'<[^>]+>', '', abstract_m.group(1)).strip()
-            abstract = re.sub(r'\s+', ' ', abstract)
+        desc_text = item.findtext('description', '')
+        abstract = parse_description(desc_text)
 
-        paper_url = arxiv_url + 'abs/' + paper_id
-        paper_data = {
+        paper_url = ARXIV_BASE + 'abs/' + paper_id
+        content[paper_id] = {
             "title": title,
             "authors": authors,
             "first_author": first_author,
@@ -134,26 +135,24 @@ def scrape_arxiv_listing(category, max_results=None):
             "date": date_str,
             "url": paper_url,
         }
-        content[paper_id] = paper_data
-        content_to_web[paper_id] = f"- {date_str}, **{title}**, {first_author} et.al., Paper: [{paper_url}]({paper_url})\n"
+        content_to_web[paper_id] = (
+            f"- {date_str}, **{title}**, {first_author} et.al., "
+            f"Paper: [{paper_url}]({paper_url})\n"
+        )
         logging.info(f"Time = {date_str} title = {title} author = {first_author}")
 
     logging.info(f"Scraped {len(content)} papers from {category}")
-    data = {category: content}
-    data_web = {category: content_to_web}
-    return data, data_web
+    return {category: content}, {category: content_to_web}
+
 
 def get_daily_papers_by_category(category, max_results=None):
-    """Fetch all papers in a given arXiv category via HTML scraping."""
-    return scrape_arxiv_listing(category, max_results=max_results)
+    """Fetch all papers in a given arXiv category via RSS."""
+    return scrape_arxiv_rss(category, max_results=max_results)
+
 
 def save_date_json(filepath, data_dict):
-    '''
-    write today's papers to a date-stamped JSON file.
-    if re-run on the same day, merge with existing data.
-    '''
     if os.path.exists(filepath):
-        with open(filepath, "r") as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
             existing = json.loads(content) if content else {}
     else:
@@ -166,11 +165,12 @@ def save_date_json(filepath, data_dict):
             else:
                 existing[keyword] = papers
 
-    with open(filepath, "w") as f:
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(existing, f)
 
+
 def generate_daily_md(data_dicts, md_path):
-    """Generate a daily markdown file from scraped paper data."""
     def pretty_math(s):
         ret = ''
         match = re.search(r"\$.*\$", s)
@@ -186,7 +186,8 @@ def generate_daily_md(data_dicts, md_path):
 
     today = datetime.date.today().isoformat()
 
-    with open(md_path, 'w') as f:
+    os.makedirs(os.path.dirname(md_path), exist_ok=True)
+    with open(md_path, 'w', encoding='utf-8') as f:
         f.write(f"# cs.CV Daily Papers — {today}\n\n")
         f.write(f"[Back to README](../README.md)\n\n")
 
@@ -217,8 +218,8 @@ def generate_daily_md(data_dicts, md_path):
     paper_count = sum(len(v) for d in data_dicts for v in d.values())
     logging.info(f"Generated {md_path} with {paper_count} papers")
 
+
 def update_readme_links(md_dir, readme_path):
-    """Scan md/ directory and update README with links to daily files."""
     md_files = sorted(glob.glob(os.path.join(md_dir, '*.md')), reverse=True)
     if not md_files:
         return
@@ -226,9 +227,8 @@ def update_readme_links(md_dir, readme_path):
     rows = []
     for fp in md_files:
         date_str = os.path.splitext(os.path.basename(fp))[0]
-        # count rows with paper links
         count = 0
-        with open(fp) as f:
+        with open(fp, encoding='utf-8') as f:
             for line in f:
                 if line.startswith('|**'):
                     count += 1
@@ -236,7 +236,7 @@ def update_readme_links(md_dir, readme_path):
 
     marker = '<!-- DAILY_PAPERS -->'
     try:
-        with open(readme_path, 'r') as f:
+        with open(readme_path, 'r', encoding='utf-8') as f:
             content = f.read()
     except FileNotFoundError:
         content = ''
@@ -246,7 +246,7 @@ def update_readme_links(md_dir, readme_path):
     else:
         header = content + '\n' + marker
 
-    with open(readme_path, 'w') as f:
+    with open(readme_path, 'w', encoding='utf-8') as f:
         f.write(header)
         f.write('\n\n## Daily Papers\n\n')
         f.write('| Date | Papers | Link |\n')
@@ -256,6 +256,7 @@ def update_readme_links(md_dir, readme_path):
         f.write('\n')
 
     logging.info(f"Updated README links with {len(rows)} daily entries")
+
 
 def demo(**config):
     data_collector = []
@@ -269,23 +270,32 @@ def demo(**config):
     if daily_category:
         for cat in category_list:
             logging.info(f"Category: {cat}")
-            data, _ = get_daily_papers_by_category(cat, max_results=category_max_results)
-            data_collector.append(data)
+            try:
+                data, _ = get_daily_papers_by_category(cat, max_results=category_max_results)
+                paper_count = sum(len(v) for v in data.values())
+                if paper_count == 0:
+                    logging.warning(f"No papers found for {cat}, skipping save")
+                    continue
+                data_collector.append(data)
+            except Exception as e:
+                logging.error(f"Failed to fetch papers for {cat}: {e}")
     logging.info("GET daily papers end")
 
-    # 1. save to date-stamped JSON
+    if not data_collector:
+        logging.warning("No data collected, skipping file generation")
+        return
+
     json_dir = config.get('json_dir', './json')
     date_json = os.path.join(json_dir, f"cv-arxiv-daily-{today}.json")
     save_date_json(date_json, data_collector)
 
-    # 2. generate daily markdown
     md_dir = config.get('md_dir', './md')
     date_md = os.path.join(md_dir, f"{today}.md")
     generate_daily_md(data_collector, date_md)
 
-    # 3. update README index links
     readme_path = config.get('md_readme_path', 'README.md')
     update_readme_links(md_dir, readme_path)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
