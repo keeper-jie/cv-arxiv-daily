@@ -186,9 +186,12 @@ def generate_daily_md(data_dicts, md_path):
 
     today = datetime.date.today().isoformat()
 
+    all_categories = sorted({cat for d in data_dicts for cat in d.keys() if d[cat]})
+    title_cats = ', '.join(all_categories) if all_categories else 'Arxiv'
+
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
     with open(md_path, 'w', encoding='utf-8') as f:
-        f.write(f"# cs.CV Daily Papers — {today}\n\n")
+        f.write(f"# {title_cats} Daily Papers — {today}\n\n")
         f.write(f"[Back to README](../README.md)\n\n")
 
         for ddict in data_dicts:
@@ -228,11 +231,16 @@ def update_readme_links(md_dir, readme_path):
     for fp in md_files:
         date_str = os.path.splitext(os.path.basename(fp))[0]
         count = 0
+        categories = []
         with open(fp, encoding='utf-8') as f:
             for line in f:
                 if line.startswith('|**'):
                     count += 1
-        rows.append((date_str, count, os.path.relpath(fp, os.path.dirname(readme_path))))
+                elif line.startswith('## ') and not line.startswith('## Daily'):
+                    categories.append(line.strip().lstrip('# ').strip())
+        cat_label = ', '.join(categories) if categories else 'Arxiv'
+        rel = os.path.relpath(fp, os.path.dirname(readme_path)).replace('\\', '/')
+        rows.append((date_str, count, rel, cat_label))
 
     marker = '<!-- DAILY_PAPERS -->'
     try:
@@ -251,8 +259,8 @@ def update_readme_links(md_dir, readme_path):
         f.write('\n\n## Daily Papers\n\n')
         f.write('| Date | Papers | Link |\n')
         f.write('|------|--------|------|\n')
-        for date_str, count, rel_path in rows:
-            f.write(f'| {date_str} | {count} | [cs.CV]({rel_path}) |\n')
+        for date_str, count, rel_path, cat_label in rows:
+            f.write(f'| {date_str} | {count} | [{cat_label}]({rel_path}) |\n')
         f.write('\n')
 
     logging.info(f"Updated README links with {len(rows)} daily entries")

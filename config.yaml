@@ -2,7 +2,7 @@
 
 # category-based daily fetch
 daily_category: true
-category_list: ["cs.CV"]
+category_list: ["cs.CV", "cs.AI"]
 
 # output directories
 json_dir: './json'
