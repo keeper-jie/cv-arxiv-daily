@@ -1,46 +1,47 @@
 # cv-arxiv-daily
 
-Daily scraping of the latest Computer Vision papers from [arxiv.org](https://arxiv.org), automated via GitHub Actions.
+Daily scraping of the latest papers from [arxiv.org](https://arxiv.org) in **cs.CV** (Computer Vision) and **cs.AI** (Artificial Intelligence), automated via GitHub Actions.
 
 ## How it works
 
 ```
-GitHub Action (daily 9:00 UTC)
-  → scrape https://arxiv.org/list/cs.CV/new
-  → extract title, authors, abstract for each paper
-  → save to docs/cv-arxiv-daily-YYYY-MM-DD.json
-  → merge all dates → generate Markdown tables below
+GitHub Action (daily ~01:00 UTC / 09:00 Beijing Time)
+  → fetch RSS feed https://rss.arxiv.org/rss/{category}
+  → parse title, authors, abstract for each paper
+  → save to json/cv-arxiv-daily-YYYY-MM-DD.json
+  → generate daily Markdown tables in md/YYYY-MM-DD.md
+  → update README with links to all daily entries
 ```
 
-- **No API key required** — parses the HTML listing page directly, avoiding ArXiv API rate limits.
+- **RSS-based** — uses arXiv RSS feeds for stable, structured data (no HTML scraping).
+- **Multi-category** — tracks cs.CV and cs.AI; easily extensible via `config.yaml`.
 - **Structured JSON** — each date file stores `title`, `authors`, `first_author`, `abstract`, `date`, `url`.
-- **Incremental** — README is regenerated from all historical date JSONs on each run.
+- **Retry & error handling** — HTTP requests include automatic retry with exponential backoff.
 
 ## Project structure
 
 ```
 .
 ├── daily_arxiv.py              # main scraper script
-├── config.yaml                 # configuration
+├── config.yaml                 # configuration (categories, output paths)
 ├── requirements.txt            # Python dependencies
 ├── .github/workflows/
 │   └── cv-arxiv-daily.yml      # GitHub Actions schedule
-├── docs/
-│   ├── cv-arxiv-daily-{date}.json      # daily paper data (auto)
-│   ├── cv-arxiv-daily-web-{date}.json  # web format (auto)
-│   └── index.md                        # GitHub Pages output (auto)
-└── README.md                   # this file + daily paper tables
+├── json/
+│   └── cv-arxiv-daily-{date}.json   # daily paper data (auto)
+├── md/
+│   └── {date}.md                     # daily paper tables (auto)
+└── README.md                   # this file + daily paper links
 ```
 
 ## Local development
 
 ```bash
 # setup
-python3 -m venv venv
-venv/bin/pip install -r requirements.txt
+pip install -r requirements.txt
 
 # run
-venv/bin/python daily_arxiv.py
+python daily_arxiv.py
 ```
 
 ## Configuration
@@ -48,19 +49,19 @@ venv/bin/python daily_arxiv.py
 Edit `config.yaml`:
 
 ```yaml
-daily_category: true            # enable category-based scraping
-category_list: ["cs.CV"]        # arXiv categories to track
-publish_readme: true            # update README.md
-publish_gitpage: true           # update docs/index.md
+daily_category: true                  # enable category-based scraping
+category_list: ["cs.CV", "cs.AI"]     # arXiv categories to track
+json_dir: './json'                    # JSON output directory
+md_dir: './md'                        # Markdown output directory
 ```
 
-Add more categories in `category_list` — e.g. `["cs.CV", "cs.RO", "cs.AI"]` — to track multiple fields.
+Add more categories in `category_list` — e.g. `["cs.CV", "cs.AI", "cs.RO"]` — to track additional fields.
 
 ## GitHub Actions setup
 
 1. Fork this repo
 2. Settings → Actions → General → Workflow permissions → **Read and write permissions**
-3. The workflow runs daily at 9:00 UTC (`cron: "0 9 * * *"`). Adjust timezone in `.github/workflows/cv-arxiv-daily.yml` if needed.
+3. The workflow runs daily at 01:00 UTC (`cron: "0 1 * * *"`). Adjust timezone in `.github/workflows/cv-arxiv-daily.yml` if needed.
 
 <!-- DAILY_PAPERS -->
 
@@ -68,6 +69,7 @@ Add more categories in `category_list` — e.g. `["cs.CV", "cs.RO", "cs.AI"]` �
 
 | Date | Papers | Link |
 |------|--------|------|
+| 2026-09-11 | 408 | [cs.CV, cs.AI](md/2026-09-11.md) |
 | 2026-09-10 | 408 | [cs.CV, cs.AI](md/2026-09-10.md) |
 | 2026-09-08 | 174 | [cs.CV](md/2026-09-08.md) |
 | 2026-09-07 | 174 | [cs.CV](md/2026-09-07.md) |
