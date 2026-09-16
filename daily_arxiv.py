@@ -178,9 +178,9 @@ def generate_daily_md(data_dicts, md_path):
             return s
         math_start, math_end = match.span()
         space_trail = space_leading = ''
-        if s[:math_start][-1] != ' ' and '*' != s[:math_start][-1]:
+        if math_start > 0 and s[:math_start][-1] != ' ' and '*' != s[:math_start][-1]:
             space_trail = ' '
-        if s[math_end:][0] != ' ' and '*' != s[math_end:][0]:
+        if math_end < len(s) and s[math_end:][0] != ' ' and '*' != s[math_end:][0]:
             space_leading = ' '
         return s[:math_start] + f'{space_trail}${match.group()[1:-1].strip()}${space_leading}' + s[math_end:]
 
